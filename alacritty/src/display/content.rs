@@ -14,9 +14,12 @@ use alacritty_terminal::term::{self, RenderableContent as TerminalContent, Term,
 
 use crate::config::UiConfig;
 use crate::display::color::{List, DIM_FACTOR};
+use crate::display::cursor::CursorRects;
 use crate::display::hint::{self, HintState};
 use crate::display::Display;
 use crate::event::SearchState;
+
+use log::debug;
 
 /// Minimum contrast between a fixed cursor color and the cell's background.
 pub const MIN_CURSOR_CONTRAST: f64 = 1.5;
@@ -135,6 +138,7 @@ impl<'a> RenderableContent<'a> {
 
         RenderableCursor {
             is_wide: cell.flags.contains(Flags::WIDE_CHAR),
+            data: CursorRects::default(),
             shape: self.cursor_shape,
             point: self.cursor_point,
             cursor_color,
@@ -382,29 +386,32 @@ impl RenderableCell {
 }
 
 /// Cursor storing all information relevant for rendering.
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, Default)]
 pub struct RenderableCursor {
+    pub point: Point<usize>,
     shape: CursorShape,
-    cursor_color: Rgb,
+    pub data: CursorRects,
+    pub cursor_color: Rgb,
     text_color: Rgb,
     is_wide: bool,
-    point: Point<usize>,
 }
 
 impl RenderableCursor {
     fn new_hidden() -> Self {
         let shape = CursorShape::Hidden;
+        let data = CursorRects::default();
         let cursor_color = Rgb::default();
         let text_color = Rgb::default();
         let is_wide = false;
         let point = Point::default();
-        Self { shape, cursor_color, text_color, is_wide, point }
+        Self { shape, data, cursor_color, text_color, is_wide, point }
     }
 }
 
 impl RenderableCursor {
     pub fn new(point: Point<usize>, shape: CursorShape, cursor_color: Rgb, is_wide: bool) -> Self {
-        Self { shape, cursor_color, text_color: cursor_color, is_wide, point }
+        let data = CursorRects::default();
+        Self { shape, data, cursor_color, text_color: cursor_color, is_wide, point }
     }
 
     pub fn color(&self) -> Rgb {

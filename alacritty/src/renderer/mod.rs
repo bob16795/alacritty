@@ -19,10 +19,12 @@ use crate::config::debug::RendererPreference;
 use crate::display::content::RenderableCell;
 use crate::display::SizeInfo;
 use crate::gl;
+use crate::renderer::quads::{QuadRenderer, RenderQuad};
 use crate::renderer::rects::{RectRenderer, RenderRect};
 use crate::renderer::shader::ShaderError;
 
 pub mod platform;
+pub mod quads;
 pub mod rects;
 mod shader;
 mod text;
@@ -83,6 +85,7 @@ enum TextRendererProvider {
 pub struct Renderer {
     text_renderer: TextRendererProvider,
     rect_renderer: RectRenderer,
+    quad_renderer: QuadRenderer,
 }
 
 impl Renderer {
@@ -126,15 +129,17 @@ impl Renderer {
             None => (shader_version.as_ref() >= "3.3" && !is_gles_context, true),
         };
 
-        let (text_renderer, rect_renderer) = if use_glsl3 {
+        let (text_renderer, rect_renderer, quad_renderer) = if use_glsl3 {
             let text_renderer = TextRendererProvider::Glsl3(Glsl3Renderer::new()?);
             let rect_renderer = RectRenderer::new(ShaderVersion::Glsl3)?;
-            (text_renderer, rect_renderer)
+            let quad_renderer = QuadRenderer::new(ShaderVersion::Glsl3)?;
+            (text_renderer, rect_renderer, quad_renderer)
         } else {
             let text_renderer =
                 TextRendererProvider::Gles2(Gles2Renderer::new(allow_dsb, is_gles_context)?);
             let rect_renderer = RectRenderer::new(ShaderVersion::Gles2)?;
-            (text_renderer, rect_renderer)
+            let quad_renderer = QuadRenderer::new(ShaderVersion::Gles2)?;
+            (text_renderer, rect_renderer, quad_renderer)
         };
 
         // Enable debug logging for OpenGL as well.
@@ -147,7 +152,7 @@ impl Renderer {
             }
         }
 
-        Ok(Self { text_renderer, rect_renderer })
+        Ok(Self { text_renderer, rect_renderer, quad_renderer })
     }
 
     pub fn draw_cells<I: Iterator<Item = RenderableCell>>(
@@ -230,6 +235,31 @@ impl Renderer {
         }
 
         self.rect_renderer.draw(size_info, metrics, rects);
+
+        // Activate regular state again.
+        unsafe {
+            // Reset blending strategy.
+            gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
+
+            // Restore viewport with padding.
+            self.set_viewport(size_info);
+        }
+    }
+
+    /// Draw all rectangles simultaneously to prevent excessive program swaps.
+    pub fn draw_quads(&mut self, size_info: &SizeInfo, metrics: &Metrics, quads: Vec<RenderQuad>) {
+        if quads.is_empty() {
+            return;
+        }
+
+        // Prepare rect rendering state.
+        unsafe {
+            // Remove padding from viewport.
+            gl::Viewport(0, 0, size_info.width() as i32, size_info.height() as i32);
+            gl::BlendFuncSeparate(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE);
+        }
+
+        self.quad_renderer.draw(size_info, metrics, quads);
 
         // Activate regular state again.
         unsafe {

@@ -48,6 +48,7 @@ use crate::display::meter::Meter;
 use crate::display::window::Window;
 use crate::event::{Event, EventType, Mouse, SearchState};
 use crate::message_bar::{MessageBuffer, MessageType};
+use crate::renderer::quads::RenderQuad;
 use crate::renderer::rects::{RenderLine, RenderLines, RenderRect};
 use crate::renderer::{self, GlyphCache, Renderer};
 use crate::scheduler::{Scheduler, TimerId, Topic};
@@ -371,6 +372,8 @@ pub struct Display {
     /// The state of the timer for frame scheduling.
     pub frame_timer: FrameTimer,
 
+    cursor: RenderableCursor,
+
     // Mouse point position when highlighting hints.
     hint_mouse_point: Option<Point>,
 
@@ -505,6 +508,12 @@ impl Display {
             renderer: ManuallyDrop::new(renderer),
             glyph_cache,
             hint_state,
+            cursor: RenderableCursor::new(
+                Point { line: 0, column: Column(0) },
+                CursorShape::Block,
+                Rgb::default(),
+                false,
+            ),
             meter: Meter::new(),
             size_info,
             ime: Ime::new(),
@@ -771,7 +780,12 @@ impl Display {
         let foreground_color = content.color(NamedColor::Foreground as usize);
         let background_color = content.color(NamedColor::Background as usize);
         let display_offset = content.display_offset();
-        let cursor = content.cursor();
+
+        let cursor_color = content.color(NamedColor::Foreground as usize);
+        self.cursor.cursor_color = cursor_color;
+
+        self.cursor.point.line = terminal.grid().cursor.point.line.0 as usize;
+        self.cursor.point.column = terminal.grid().cursor.point.column;
 
         let cursor_point = terminal.grid().cursor.point;
         let total_lines = terminal.grid().total_lines();
@@ -784,6 +798,16 @@ impl Display {
         if self.collect_damage() {
             self.update_damage(&mut terminal, selection_range, search_state);
         }
+
+        // TODO: use min and max instead
+        let mut cursor_rect = DamageRect::new(
+            self.cursor.data.positions[0].x as i32 - 20,
+            size_info.height() as i32 - self.cursor.data.positions[0].y as i32 - 50,
+            self.cursor.data.positions[2].x as i32 - self.cursor.data.positions[0].x as i32 + 40,
+            self.cursor.data.positions[2].y as i32 - self.cursor.data.positions[0].y as i32 + 100,
+        );
+
+        self.damage_rects.push(cursor_rect);
 
         // Drop terminal as early as possible to free lock.
         drop(terminal);
@@ -854,7 +878,8 @@ impl Display {
         };
 
         // Draw cursor.
-        rects.extend(cursor.rects(&size_info, config.terminal_config.cursor.thickness()));
+        let mut quads = Vec::new();
+        quads.push(self.cursor.quads(&size_info, config.terminal_config.cursor.thickness()));
 
         // Push visual bell after url/underline/strikeout rects.
         let visual_bell_intensity = self.visual_bell.intensity();
@@ -891,10 +916,7 @@ impl Display {
                 if self.ime.preedit().is_none() {
                     let fg = config.colors.footer_bar_foreground();
                     let shape = CursorShape::Underline;
-                    let cursor = RenderableCursor::new(Point::new(line, column), shape, fg, false);
-                    rects.extend(
-                        cursor.rects(&size_info, config.terminal_config.cursor.thickness()),
-                    );
+                    //quads.push(cursor.quads(&size_info, config.terminal_config.cursor.thickness()));
                 }
 
                 Some(Point::new(line, column))
@@ -915,7 +937,7 @@ impl Display {
                     (foreground_color, background_color)
                 };
 
-                self.draw_ime_preview(point, fg, bg, &mut rects, config);
+                self.draw_ime_preview(point, fg, bg, &mut rects, &mut quads, config);
             }
         }
 
@@ -945,6 +967,9 @@ impl Display {
             // Draw rectangles.
             self.renderer.draw_rects(&size_info, &metrics, rects);
 
+            // Draw rectangles.
+            self.renderer.draw_quads(&size_info, &metrics, quads);
+
             // Relay messages to the user.
             let glyph_cache = &mut self.glyph_cache;
             let fg = config.colors.primary.background;
@@ -962,6 +987,9 @@ impl Display {
         } else {
             // Draw rectangles.
             self.renderer.draw_rects(&size_info, &metrics, rects);
+
+            // Draw rectangles.
+            self.renderer.draw_quads(&size_info, &metrics, quads);
         }
 
         self.draw_render_timer(config);
@@ -1068,6 +1096,7 @@ impl Display {
         fg: Rgb,
         bg: Rgb,
         rects: &mut Vec<RenderRect>,
+        quads: &mut Vec<RenderQuad>,
         config: &UiConfig,
     ) {
         let preedit = match self.ime.preedit() {
@@ -1137,11 +1166,6 @@ impl Display {
                     (end.column.0 as isize - cursor_end_offset as isize + 1).max(0) as usize,
                 );
                 let cursor_point = Point::new(point.line, cursor_column);
-                let cursor =
-                    RenderableCursor::new(cursor_point, CursorShape::HollowBlock, fg, is_wide);
-                rects.extend(
-                    cursor.rects(&self.size_info, config.terminal_config.cursor.thickness()),
-                );
                 cursor_point
             },
             _ => end,
